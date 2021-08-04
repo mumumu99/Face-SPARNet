@@ -1,7 +1,0 @@
-./test_images/
-
-./test_dirs/
-
-./testhzgg_results/
-
-./pretrained_models/
