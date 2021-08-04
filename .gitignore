@@ -3,6 +3,7 @@ pretrain_models/
 results*
 test_dirs/
 test_hzgg_results/
+test_images/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

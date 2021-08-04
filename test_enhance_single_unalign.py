@@ -15,34 +15,47 @@ from options.test_options import TestOptions
 from models import create_model
 
 
-def detect_and_align_faces(img, face_detector, lmk_predictor, template_path, template_scale=2, size_threshold=999):
+def detect_and_align_faces(frame_path, face_detector, lmk_predictor, template_path, template_scale=2, size_threshold=999):
     align_out_size = (512, 512)
     ref_points = np.load(template_path) / template_scale
-        
-    # Detect landmark points
-    face_dets = face_detector(img, 1)
-    assert len(face_dets) > 0, 'No faces detected'
 
     aligned_faces = []
     tform_params = []
-    for det in face_dets:
-        if isinstance(face_detector, dlib.cnn_face_detection_model_v1):
-            rec = det.rect # for cnn detector
-        else:
-            rec = det
-        if rec.width() > size_threshold or rec.height() > size_threshold: 
-            print('Face is too large')
-            break
-        landmark_points = lmk_predictor(img, rec) 
-        single_points = []
-        for i in range(5):
-            single_points.append([landmark_points.part(i).x, landmark_points.part(i).y])
-        single_points = np.array(single_points)
-        tform = trans.SimilarityTransform()
-        tform.estimate(single_points, ref_points)
-        tmp_face = trans.warp(img, tform.inverse, output_shape=align_out_size, order=3)
-        aligned_faces.append(tmp_face*255)
-        tform_params.append(tform)
+    ind = 0
+    start = ind
+    frame_list = os.listdir(frame_path)
+    frame_list = [frame for frame in frame_list if frame.endswith(".jpg")]
+    frame_list.sort()
+    for img_name in tqdm(frame_list[start:]):
+        raw_img_path = os.path.join(frame_path, img_name)
+        img = dlib.load_rgb_image(raw_img_path)
+        face_dets = face_detector(img, 1)
+        #assert len(face_dets) > 0, 'No faces detected'
+        for det in face_dets:
+            if isinstance(face_detector, dlib.cnn_face_detection_model_v1):
+                rec = det.rect # for cnn detector
+            else:
+                rec = det
+            if rec.width() > size_threshold or rec.height() > size_threshold: 
+                print('Face is too large')
+                break
+            landmark_points = lmk_predictor(img, rec) 
+            single_points = []
+            for i in range(5):
+                single_points.append([landmark_points.part(i).x, landmark_points.part(i).y])
+            single_points = np.array(single_points)
+            tform = trans.SimilarityTransform()
+            tform.estimate(single_points, ref_points)
+            tmp_face = trans.warp(img, tform.inverse, output_shape=align_out_size, order=3)
+            aligned_faces.append(tmp_face*255)
+            tform_params.append(tform)
+
+            save_lq_dir = os.path.join(opt.results_dir, 'LQ_faces') 
+            os.makedirs(save_lq_dir, exist_ok=True)
+            save_path = os.path.join(save_lq_dir, '{:08d}.jpg'.format(ind))
+            io.imsave(save_path, (tmp_face*255).astype(np.uint8))
+        ind += 1
+
     return [aligned_faces, tform_params]
 
 
@@ -53,15 +66,34 @@ def def_models(opt):
     return model
 
 
-def enhance_faces(LQ_faces, model):
+def enhance_faces(LQ_faces, LQ_path, model):
     hq_faces = []
     lq_parse_maps = []
+    ind = 0
+    
+    LQ_list = os.listdir(LQ_path)
+    LQ_list.sort()
+    for img_name in tqdm(LQ_list):
+        raw_img_path = os.path.join(LQ_path, img_name)
+        img = dlib.load_rgb_image(raw_img_path)
+        with torch.no_grad():
+            lq_tensor = torch.tensor(img.transpose(2, 0, 1)) / 255. * 2 - 1
+            lq_tensor = lq_tensor.unsqueeze(0).float().to(model.device)
+            output_SR = model.netG(lq_tensor)
+        hq_faces.append(utils.tensor_to_img(output_SR, normal=True))
+        save_hq_dir = os.path.join(opt.results_dir, 'HQ') 
+        os.makedirs(save_hq_dir, exist_ok=True)
+        save_path = os.path.join(save_hq_dir, img_name)
+        io.imsave(save_path, utils.tensor_to_img(output_SR, normal=True))
+        ind += 1
+    '''
     for lq_face in tqdm(LQ_faces):
         with torch.no_grad():
             lq_tensor = torch.tensor(lq_face.transpose(2, 0, 1)) / 255. * 2 - 1
             lq_tensor = lq_tensor.unsqueeze(0).float().to(model.device)
             output_SR = model.netG(lq_tensor)
         hq_faces.append(utils.tensor_to_img(output_SR, normal=True))
+    '''
     return hq_faces
 
 
@@ -91,29 +123,30 @@ if __name__ == '__main__':
     face_detector = dlib.cnn_face_detection_model_v1('./pretrain_models/mmod_human_face_detector.dat')
     lmk_predictor = dlib.shape_predictor('./pretrain_models/shape_predictor_5_face_landmarks.dat')
     template_path = './pretrain_models/FFHQ_template.npy'
-
+    
     print('======> Loading images, crop and align faces.')
-    img_path = opt.test_img_path 
-    img = dlib.load_rgb_image(img_path)
-    aligned_faces, tform_params = detect_and_align_faces(img, face_detector, lmk_predictor, template_path)
+    frame_path = opt.test_frame_folder 
+    #img = dlib.load_rgb_image(img_path)
+    aligned_faces, tform_params = detect_and_align_faces(frame_path, face_detector, lmk_predictor, template_path)
     # Save aligned LQ faces
     save_lq_dir = os.path.join(opt.results_dir, 'LQ_faces') 
     os.makedirs(save_lq_dir, exist_ok=True)
     print('======> Saving aligned LQ faces to', save_lq_dir)
-    save_imgs(aligned_faces, save_lq_dir)
-
+    #save_imgs(aligned_faces, save_lq_dir)
+    
+    aligned_faces = []
+    save_lq_dir = os.path.join(opt.results_dir, 'LQ_faces') 
     enhance_model = def_models(opt)
-    hq_faces = enhance_faces(aligned_faces, enhance_model)
+    hq_faces = enhance_faces(aligned_faces, save_lq_dir, enhance_model)
     # Save LQ parsing maps and enhanced faces
     save_hq_dir = os.path.join(opt.results_dir, 'HQ') 
     os.makedirs(save_hq_dir, exist_ok=True)
     print('======> Save the enhanced faces.')
-    save_imgs(hq_faces, save_hq_dir)
-
+    #save_imgs(hq_faces, save_hq_dir)
+'''
     print('======> Paste the enhanced faces back to the original image.')
     hq_img = past_faces_back(img, hq_faces, tform_params, upscale=opt.test_upscale) 
     final_save_path = os.path.join(opt.results_dir, 'hq_final.jpg') 
     print('======> Save final result to', final_save_path)
     io.imsave(final_save_path, hq_img)
-
-
+'''
